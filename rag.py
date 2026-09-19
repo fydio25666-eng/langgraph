@@ -25,6 +25,14 @@ class HashEmbedding:
     def __call__(self, input: list[str]) -> list[list[float]]:
         return [self._encode(text) for text in input]
 
+    def embed_documents(self, input: list[str]) -> list[list[float]]:
+        """Provide Chroma's document embedding interface for inserts/upserts."""
+        return [self._encode(text) for text in input]
+
+    def embed_query(self, input: str) -> list[float]:
+        """Provide Chroma 1.x's query embedding interface."""
+        return self._encode(input)
+
     @staticmethod
     def _encode(text: str) -> list[float]:
         vector = [0.0] * VECTOR_SIZE
