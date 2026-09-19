@@ -1,0 +1,8 @@
+.git
+.gitignore
+.env
+.chroma
+__pycache__
+*.py[cod]
+*.log
+AGENTS.md
