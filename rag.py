@@ -29,9 +29,10 @@ class HashEmbedding:
         """Provide Chroma's document embedding interface for inserts/upserts."""
         return [self._encode(text) for text in input]
 
-    def embed_query(self, input: str) -> list[float]:
-        """Provide Chroma 1.x's query embedding interface."""
-        return self._encode(input)
+    def embed_query(self, input: str | list[str]) -> list[list[float]]:
+        """Provide Chroma 1.x's query embedding interface for single/batch input."""
+        texts = [input] if isinstance(input, str) else input
+        return [self._encode(text) for text in texts]
 
     @staticmethod
     def _encode(text: str) -> list[float]:
