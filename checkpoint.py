@@ -1,42 +1,35 @@
-"""Checkpoint factory with Redis persistence and MemorySaver fallback."""
+"""Persistent local SQLite checkpointer for LangGraph threads."""
 import atexit
-import logging
 import os
 from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 
-logger = logging.getLogger(__name__)
-_redis_context: AbstractContextManager[Any] | None = None
+_sqlite_context: AbstractContextManager[Any] | None = None
+_checkpointer: SqliteSaver | None = None
 
 
-def build_checkpointer() -> Any:
-    """Use Redis when configured and reachable; otherwise keep the app available in memory."""
-    global _redis_context
+def build_checkpointer() -> SqliteSaver:
+    """Create one process-wide SQLite checkpointer for persistent thread memory."""
+    global _checkpointer, _sqlite_context
+    if _checkpointer is not None:
+        return _checkpointer
+
     load_dotenv()
-    redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-    try:
-        import redis
-        from langgraph.checkpoint.redis import RedisSaver
-
-        client = redis.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
-        client.ping()
-        _redis_context = RedisSaver.from_conn_string(redis_url)
-        checkpointer = _redis_context.__enter__()
-        checkpointer.setup()
-        atexit.register(_close_redis_context)
-        logger.info("Redis checkpoint enabled: %s", redis_url.split("@")[-1])
-        return checkpointer
-    except Exception as exc:
-        logger.warning("Redis checkpoint unavailable; using MemorySaver: %s", exc)
-        return MemorySaver()
+    database_path = Path(
+        os.getenv("SQLITE_CHECKPOINT_PATH", "data/checkpoints.sqlite")
+    )
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    _sqlite_context = SqliteSaver.from_conn_string(str(database_path))
+    _checkpointer = _sqlite_context.__enter__()
+    _checkpointer.setup()
+    atexit.register(_close_sqlite_context)
+    return _checkpointer
 
 
-def _close_redis_context() -> None:
-    if _redis_context is not None:
-        try:
-            _redis_context.__exit__(None, None, None)
-        except Exception:
-            logger.debug("Redis checkpoint cleanup failed", exc_info=True)
+def _close_sqlite_context() -> None:
+    if _sqlite_context is not None:
+        _sqlite_context.__exit__(None, None, None)

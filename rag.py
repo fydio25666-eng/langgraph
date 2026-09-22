@@ -12,6 +12,7 @@ MANUAL = ROOT / "商品售后手册.txt"
 DB_PATH = ROOT / ".chroma"
 COLLECTION_NAME = "support_manual"
 VECTOR_SIZE = 256
+VECTOR_DISTANCE_THRESHOLD = 1.5
 
 
 class HashEmbedding:
@@ -61,8 +62,10 @@ def _chunks(text: str, size: int = 800) -> list[str]:
 
 
 def _collection():
+    """Open the persistent collection and initialize it when it is empty."""
     if not MANUAL.exists():
         return None
+    DB_PATH.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(DB_PATH))
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
@@ -70,7 +73,8 @@ def _collection():
         metadata={"hnsw:space": "cosine"},
     )
     chunks = _chunks(MANUAL.read_text(encoding="utf-8"))
-    if chunks:
+    # Upsert is idempotent and also repairs a missing/partially-built index.
+    if chunks and collection.count() != len(chunks):
         collection.upsert(
             ids=[f"manual-{index}" for index in range(len(chunks))],
             documents=chunks,
@@ -79,23 +83,71 @@ def _collection():
     return collection
 
 
+def _keywords(text: str) -> set[str]:
+    """Extract searchable terms, including Chinese character bigrams."""
+    terms: set[str] = set(re.findall(r"[A-Za-z0-9_]+", text.lower()))
+    for sequence in re.findall(r"[\u4e00-\u9fff]+", text):
+        terms.update(sequence)
+        terms.update(sequence[index : index + 2] for index in range(len(sequence) - 1))
+    return terms
+
+
+def _keyword_score(question: str, document: str) -> float:
+    query_terms = _keywords(question)
+    if not query_terms:
+        return 0.0
+    document_terms = _keywords(document)
+    return len(query_terms & document_terms) / len(query_terms)
+
+
 def retrieve(question: str, top_k: int = 3) -> tuple[str, list[str]]:
-    """Retrieve manual passages and return context plus citation source IDs."""
+    """Hybrid retrieval: combine Chroma vector candidates with keyword matches."""
     try:
         collection = _collection()
         if collection is None or collection.count() == 0:
             return "暂无可用手册内容。", []
-        result: dict[str, Any] = collection.query(
+
+        candidate_count = min(max(top_k * 3, 6), collection.count())
+        vector_result: dict[str, Any] = collection.query(
             query_texts=[question],
-            n_results=min(top_k, collection.count()),
-            include=["documents", "metadatas"],
+            n_results=candidate_count,
+            include=["documents", "metadatas", "distances"],
         )
-        documents = (result.get("documents") or [[]])[0]
-        metadatas = (result.get("metadatas") or [[]])[0]
-        sources = [item.get("source", "本地售后手册") for item in metadatas]
+
+        documents = (vector_result.get("documents") or [[]])[0]
+        metadatas = (vector_result.get("metadatas") or [[]])[0]
+        distances = (vector_result.get("distances") or [[]])[0]
+        ranked: dict[str, tuple[float, str, dict[str, Any]]] = {}
+        for index, (document, metadata) in enumerate(zip(documents, metadatas)):
+            distance = float(distances[index]) if index < len(distances) else 1.0
+            vector_score = max(0.0, 1.0 - distance / 2.0)
+            keyword_score = _keyword_score(question, document)
+            ranked[document] = (0.65 * vector_score + 0.35 * keyword_score, document, metadata)
+
+        # Keyword retrieval scans the local manual and can recover exact terms
+        # even when a vector candidate falls below the relaxed distance cutoff.
+        all_rows = collection.get(include=["documents", "metadatas"])
+        for document, metadata in zip(
+            all_rows.get("documents", []), all_rows.get("metadatas", [])
+        ):
+            keyword_score = _keyword_score(question, document)
+            if keyword_score <= 0:
+                continue
+            current = ranked.get(document)
+            vector_score = current[0] if current else 0.0
+            score = max(vector_score, 0.35 * keyword_score)
+            ranked[document] = (score, document, metadata)
+
+        selected = sorted(ranked.values(), key=lambda item: item[0], reverse=True)[:top_k]
+        # Do not discard all candidates on a low-similarity question; the
+        # threshold only removes weak vector-only matches when stronger results exist.
+        if not selected:
+            return "暂无匹配手册内容。", []
+        selected = [item for item in selected if item[0] >= (1 - VECTOR_DISTANCE_THRESHOLD / 2) or _keyword_score(question, item[1]) > 0] or selected[:1]
+        sources = [item[2].get("source", "本地售后手册") for item in selected]
         context = "\n\n".join(
             f"[来源：{source}]\n{document}"
-            for source, document in zip(sources, documents)
+            for source, (_, document, _) in zip(sources, selected)
         )
         return context or "暂无匹配手册内容。", sources
     except Exception:

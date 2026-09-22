@@ -51,7 +51,7 @@ def build_graph():
     graph.add_edge("other", "finalize_history")
     graph.add_edge("human", "finalize_history")
     graph.add_edge("finalize_history", END)
-    # Redis keeps thread_id sessions across workers/restarts; fallback stays functional offline.
+    # SQLite keeps thread_id sessions across process restarts.
     return graph.compile(checkpointer=build_checkpointer())
 
 

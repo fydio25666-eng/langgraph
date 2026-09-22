@@ -30,6 +30,7 @@ coverage/
 # LangGraph local state
 .langgraph_api/
 .chroma/
+data/*.sqlite
 
 # Logs and temporary files
 *.log

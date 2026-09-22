@@ -15,7 +15,7 @@ RUN groupadd --system app && useradd --system --gid app --home-dir /app app
 COPY app.py auth.py checkpoint.py config.py demo.py graph.py main.py nodes.py order_service.py refund_service.py rag.py schemas.py healthcheck.py ./
 COPY 商品售后手册.txt ./
 COPY static ./static
-RUN mkdir -p /app/.chroma && chown -R app:app /app
+RUN mkdir -p /app/.chroma /app/data && chown -R app:app /app
 
 USER app
 EXPOSE 8000

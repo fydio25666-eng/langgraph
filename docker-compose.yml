@@ -7,11 +7,11 @@ services:
       - .env
     environment:
       PYTHONUNBUFFERED: "1"
-      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
     volumes:
       - chroma_data:/app/.chroma
+      - sqlite_data:/app/data
     read_only: true
     tmpfs:
       - /tmp
@@ -20,9 +20,6 @@ services:
     cap_drop:
       - ALL
     restart: unless-stopped
-    depends_on:
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "/app/healthcheck.py"]
       interval: 30s
@@ -30,18 +27,6 @@ services:
       start_period: 20s
       retries: 3
 
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
 volumes:
   chroma_data:
-  redis_data:
+  sqlite_data:

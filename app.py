@@ -1,6 +1,7 @@
 """FastAPI HTTP/SSE adapter for the LangGraph customer-support workflow."""
 import json
 import logging
+import time
 from pathlib import Path
 from collections.abc import Iterator
 from typing import Any
@@ -17,10 +18,52 @@ from auth import require_api_token
 from nodes import human_fallback
 from schemas import ServiceReply
 
+LOG_FILE = Path(__file__).resolve().parent / "app.log"
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    log_formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s - %(message)s"
+    )
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_formatter)
+    file_handler = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
+    file_handler.setFormatter(log_formatter)
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
 app = FastAPI(title="E-commerce Support API", version="1.0.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    """Log every request's path, duration, status, and uncaught errors."""
+    started_at = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        logger.exception(
+            "Request failed method=%s path=%s duration_ms=%.2f",
+            request.method,
+            request.url.path,
+            elapsed_ms,
+        )
+        raise
+
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    log_method = logger.warning if response.status_code >= 400 else logger.info
+    log_method(
+        "Request completed method=%s path=%s status=%s duration_ms=%.2f",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
 
 
 class ChatRequest(BaseModel):
@@ -82,6 +125,12 @@ async def validation_exception_handler(
     """Return a stable validation response instead of FastAPI's default shape."""
     # Pydantic v2 may place a ValueError in ctx; encode it before JSON serialization.
     details = jsonable_encoder(exc.errors())
+    logger.warning(
+        "Request validation failed method=%s path=%s errors=%s",
+        request.method,
+        request.url.path,
+        details,
+    )
     return JSONResponse(
         status_code=422,
         content={"error": "请求参数校验失败", "details": details},
